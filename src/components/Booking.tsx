@@ -76,7 +76,13 @@ export default function Booking() {
 ${form.comment || ''}`,
   }),
 })
-
+if (typeof window !== 'undefined' && (window as any).gtag) {
+  (window as any).gtag('event', 'generate_lead', {
+    event_category: 'booking',
+    event_label: 'Booking Form',
+    value: 1,
+  });
+}
       setStatus('success')
       setForm(initialState)
       setTimeout(() => setStatus('idle'), 5000)
