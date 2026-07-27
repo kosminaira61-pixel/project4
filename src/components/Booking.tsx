@@ -61,29 +61,29 @@ export default function Booking() {
       })
 
       if (error) throw error
-      await fetch('/api/booking', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    name: form.name,
-    phone: form.phone,
-    date: form.booking_date,
-    time: '-',
-    comment: `Маршрут: ${form.route || 'Не вказано'}
-Кількість людей: ${form.people_count}
-${form.comment || ''}`,
-  }),
-})
-if (typeof window !== 'undefined' && (window as any).gtag) {
+      await fetch('/api/booking', {if (typeof window !== 'undefined' && (window as any).gtag) {
   (window as any).gtag('event', 'generate_lead', {
     event_category: 'booking',
     event_label: 'Booking Form',
     value: 1,
-  });
+  })
 }
-      setStatus('success')
+
+try {
+  await fetch('/api/booking', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      phone,
+      date: booking_date,
+      time: '-',
+      comment: `Маршрут: ${route}, кількість людей: ${people_count}. ${comment}`,
+    }),
+  })
+} catch (telegramError) {
+  console.error('Telegram error:', telegramError)
+}      setStatus('success')
       setForm(initialState)
       setTimeout(() => setStatus('idle'), 5000)
     } catch (err) {
