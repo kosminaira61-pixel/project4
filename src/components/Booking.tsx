@@ -42,56 +42,89 @@ export default function Booking() {
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const validationErrors = validate()
-    if (Object.keys(validationErrors).length > 0) {
-      setErrors(validationErrors)
-      return
-    }
+  e.preventDefault()
 
-    setStatus('loading')
-    try {
-      const { error } = await supabase.from('bookings').insert({
-        name: form.name.trim(),
-        phone: form.phone.trim(),
-        booking_date: form.booking_date,
-        people_count: form.people_count,
-        route: form.route || null,
-        comment: form.comment.trim() || null,
+  const validationErrors = validate()
+
+  if (Object.keys(validationErrors).length > 0) {
+    setErrors(validationErrors)
+    return
+  }
+
+  setStatus('loading')
+
+  try {
+    // 1. Зберігаємо бронювання в Supabase
+    const { error } = await supabase.from('bookings').insert({
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      booking_date: form.booking_date,
+      people_count: form.people_count,
+      route: form.route || null,
+      comment: form.comment.trim() || null,
+    })
+
+    if (error) throw error
+
+    // 2. Відправляємо generate_lead у Google Analytics
+    if (typeof window !== 'undefined' && (window as any).gtag) {
+      ;(window as any).gtag('event', 'generate_lead', {
+        event_category: 'booking',
+        event_label: 'Booking Form',
+        value: 1,
+        debug_mode: true,
       })
 
-      if (error) throw error
-      await fetch('/api/booking', {if (typeof window !== 'undefined' && (window as any).gtag) {
-  (window as any).gtag('event', 'generate_lead', {
-    event_category: 'booking',
-    event_label: 'Booking Form',
-    value: 1,
-  })
-}
-
-try {
-  await fetch('/api/booking', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      phone,
-      date: booking_date,
-      time: '-',
-      comment: `Маршрут: ${route}, кількість людей: ${people_count}. ${comment}`,
-    }),
-  })
-} catch (telegramError) {
-  console.error('Telegram error:', telegramError)
-}      setStatus('success')
-      setForm(initialState)
-      setTimeout(() => setStatus('idle'), 5000)
-    } catch (err) {
-      console.error('Booking error:', err)
-      setStatus('error')
-      setTimeout(() => setStatus('idle'), 5000)
+      console.log('GA4 generate_lead sent')
+    } else {
+      console.error('GA4 gtag not found')
     }
+
+    // 3. Відправляємо заявку у Telegram
+    try {
+      const telegramResponse = await fetch('/api/booking', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: form.name.trim(),
+          phone: form.phone.trim(),
+          date: form.booking_date,
+          time: '-',
+          comment: `Маршрут: ${form.route || 'Не вказано'}
+Кількість людей: ${form.people_count}
+${form.comment.trim() || ''}`,
+        }),
+      })
+
+      if (!telegramResponse.ok) {
+        console.error(
+          'Telegram request failed:',
+          telegramResponse.status
+        )
+      }
+    } catch (telegramError) {
+      console.error('Telegram error:', telegramError)
+    }
+
+    // 4. Показуємо успішне бронювання
+    setStatus('success')
+    setForm(initialState)
+
+    setTimeout(() => {
+      setStatus('idle')
+    }, 5000)
+  } catch (err) {
+    console.error('Booking error:', err)
+
+    setStatus('error')
+
+    setTimeout(() => {
+      setStatus('idle')
+    }, 5000)
   }
+}
 
   const inputClass = (field: keyof FormState) =>
     `w-full bg-ink-950 border rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-accent transition-colors ${
