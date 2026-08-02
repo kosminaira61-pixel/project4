@@ -5,7 +5,7 @@ export default function Instagram() {
   const { ref, isVisible } = useScrollAnimation()
 
   return (
-    <section ref={ref} className="py-20 bg-ink-900">
+    <section id="instagram" ref={ref} className="py-20 bg-ink-900">
       <div className="max-w-4xl mx-auto px-4 sm:px-6">
         <div
           className={`relative overflow-hidden rounded-3xl border border-white/5 bg-gradient-to-br from-ink-800 via-ink-800 to-ink-700 p-8 sm:p-12 text-center transition-all duration-700 ${

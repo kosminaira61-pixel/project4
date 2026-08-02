@@ -1,5 +1,6 @@
 import { routes } from '../data/content'
 import { useScrollAnimation } from '../hooks/useScrollAnimation'
+import { trackEvent } from '../lib/analytics'
 
 const difficultyColors: Record<string, string> = {
   'Легка': 'bg-green-500/15 text-green-400 border-green-500/30',
@@ -19,7 +20,7 @@ export default function Routes() {
             Оберіть маршрут
           </h2>
           <p className="text-white/60 text-lg mt-4 max-w-2xl mx-auto">
-            Описи та параметри маршрутів є прикладними — зв'яжіться з нами для уточнення.
+            Обирайте панорами, лісові дороги або складніший гірський маршрут. Перед стартом інструктор узгодить безпечний формат поїздки.
           </p>
         </div>
 
@@ -60,9 +61,13 @@ export default function Routes() {
                 <p className="text-white/60 text-sm leading-relaxed mb-6">{route.description}</p>
                 <a
                   href="#booking"
-                  className="block text-center font-semibold py-3 rounded-xl border border-white/10 text-white hover:bg-white/5 transition-colors"
+                  onClick={() => {
+                  window.dispatchEvent(new CustomEvent('select-booking-option', { detail: route.title }))
+                  trackEvent('select_route', { route_name: route.title })
+                }}
+                  className="block text-center font-semibold py-3 rounded-xl border border-accent/40 text-white hover:bg-accent hover:text-ink-950 transition-colors"
                 >
-                  Забронювати цей маршрут
+                  Обрати маршрут
                 </a>
               </div>
             </div>

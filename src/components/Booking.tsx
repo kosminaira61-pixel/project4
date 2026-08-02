@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { routes, services } from '../data/content'
+import { routes, services, PHONE, PHONE_TEL } from '../data/content'
 import { useScrollAnimation } from '../hooks/useScrollAnimation'
+import { trackEvent } from '../lib/analytics'
 
 type FormState = {
   name: string
@@ -26,230 +27,193 @@ export default function Booking() {
   const [form, setForm] = useState<FormState>(initialState)
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
+  const minDate = useMemo(() => new Date().toISOString().split('T')[0], [])
+
+  useEffect(() => {
+    const selectOption = (event: Event) => {
+      const selected = (event as CustomEvent<string>).detail
+      if (selected) setForm((previous) => ({ ...previous, route: selected }))
+    }
+
+    window.addEventListener('select-booking-option', selectOption)
+    return () => window.removeEventListener('select-booking-option', selectOption)
+  }, [])
 
   const validate = () => {
-    const e: Partial<Record<keyof FormState, string>> = {}
-    if (!form.name.trim()) e.name = 'Введіть ім\'я'
-    if (!form.phone.trim()) e.phone = 'Введіть телефон'
-    else if (!/^[+]?[\d\s()-]{7,}$/.test(form.phone)) e.phone = 'Невірний формат телефону'
-    if (!form.booking_date) e.booking_date = 'Оберіть дату'
-    return e
+    const validationErrors: Partial<Record<keyof FormState, string>> = {}
+    if (!form.name.trim()) validationErrors.name = 'Введіть ім\'я'
+    if (!form.phone.trim()) validationErrors.phone = 'Введіть телефон'
+    else if (!/^[+]?[\d\s()-]{7,}$/.test(form.phone)) validationErrors.phone = 'Невірний формат телефону'
+    if (!form.booking_date) validationErrors.booking_date = 'Оберіть дату'
+    return validationErrors
   }
 
   const handleChange = (field: keyof FormState, value: string | number) => {
-    setForm((prev) => ({ ...prev, [field]: value }))
-    if (errors[field]) setErrors((prev) => ({ ...prev, [field]: undefined }))
+    setForm((previous) => ({ ...previous, [field]: value }))
+    if (errors[field]) setErrors((previous) => ({ ...previous, [field]: undefined }))
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault()
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
 
-  const validationErrors = validate()
+    const validationErrors = validate()
+    if (Object.keys(validationErrors).length > 0) {
+      setErrors(validationErrors)
+      return
+    }
 
-  if (Object.keys(validationErrors).length > 0) {
-    setErrors(validationErrors)
-    return
-  }
+    setStatus('loading')
 
-  setStatus('loading')
-
-  try {
-    // 1. Зберігаємо бронювання в Supabase
-    const { error } = await supabase.from('bookings').insert({
+    const payload = {
       name: form.name.trim(),
       phone: form.phone.trim(),
       booking_date: form.booking_date,
       people_count: form.people_count,
       route: form.route || null,
       comment: form.comment.trim() || null,
-    })
-
-    if (error) throw error
-
-    // 2. Відправляємо generate_lead у Google Analytics
-    if (typeof window !== 'undefined' && (window as any).gtag) {
-      ;(window as any).gtag('event', 'generate_lead', {
-        event_category: 'booking',
-        event_label: 'Booking Form',
-        value: 1,
-        debug_mode: true,
-      })
-
-      console.log('GA4 generate_lead sent')
-    } else {
-      console.error('GA4 gtag not found')
     }
 
-    // 3. Відправляємо заявку у Telegram
     try {
-      const telegramResponse = await fetch('/api/booking', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          phone: form.phone.trim(),
-          date: form.booking_date,
-          time: '-',
-          comment: `Маршрут: ${form.route || 'Не вказано'}
-Кількість людей: ${form.people_count}
-${form.comment.trim() || ''}`,
+      const [databaseResult, telegramResult] = await Promise.allSettled([
+        supabase.from('bookings').insert(payload),
+        fetch('/api/booking', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: payload.name,
+            phone: payload.phone,
+            date: payload.booking_date,
+            time: '-',
+            comment: `Маршрут: ${payload.route || 'Не вказано'}\nКількість людей: ${payload.people_count}\n${payload.comment || ''}`,
+          }),
         }),
-      })
+      ])
 
-      if (!telegramResponse.ok) {
+      const databaseSaved = databaseResult.status === 'fulfilled' && !databaseResult.value.error
+      const telegramSent = telegramResult.status === 'fulfilled' && telegramResult.value.ok
+
+      if (!databaseSaved) {
         console.error(
-          'Telegram request failed:',
-          telegramResponse.status
+          'Booking database error:',
+          databaseResult.status === 'fulfilled' ? databaseResult.value.error : databaseResult.reason,
         )
       }
-    } catch (telegramError) {
-      console.error('Telegram error:', telegramError)
+      if (!telegramSent) {
+        console.error(
+          'Booking Telegram error:',
+          telegramResult.status === 'fulfilled' ? telegramResult.value.status : telegramResult.reason,
+        )
+      }
+      if (!databaseSaved && !telegramSent) throw new Error('Booking could not be delivered')
+
+      trackEvent('generate_lead', {
+        event_category: 'booking',
+        event_label: 'Booking Form',
+        form_name: 'booking',
+        selected_option: payload.route || 'not_selected',
+        value: 1,
+      })
+
+      setStatus('success')
+      setErrors({})
+      setForm(initialState)
+      window.setTimeout(() => setStatus('idle'), 7000)
+    } catch (error) {
+      console.error('Booking error:', error)
+      setStatus('error')
+      window.setTimeout(() => setStatus('idle'), 7000)
     }
-
-    // 4. Показуємо успішне бронювання
-    setStatus('success')
-    setForm(initialState)
-
-    setTimeout(() => {
-      setStatus('idle')
-    }, 5000)
-  } catch (err) {
-    console.error('Booking error:', err)
-
-    setStatus('error')
-
-    setTimeout(() => {
-      setStatus('idle')
-    }, 5000)
   }
-}
 
   const inputClass = (field: keyof FormState) =>
-    `w-full bg-ink-950 border rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-accent transition-colors ${
+    `w-full rounded-xl border bg-ink-950 px-4 py-3 text-white placeholder-white/30 transition-colors focus:border-accent focus:outline-none ${
       errors[field] ? 'border-red-500' : 'border-white/10'
     }`
 
   return (
-    <section id="booking" ref={ref} className="py-24 bg-ink-900">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6">
-        <div className={`text-center mb-10 transition-all duration-700 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}>
-          <p className="text-accent font-semibold text-sm tracking-widest uppercase mb-3">Бронювання</p>
-          <h2 className="font-display text-4xl sm:text-5xl font-bold text-white">
-            Забронювати поїздку
-          </h2>
-          <p className="text-white/60 text-lg mt-4">
-            Заповніть форму, і ми зв'яжемося з вами для підтвердження.
+    <section id="booking" ref={ref} className="bg-ink-900 py-24">
+      <div className="mx-auto max-w-4xl px-4 sm:px-6">
+        <div className={`mb-10 text-center transition-all duration-700 ${isVisible ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'}`}>
+          <p className="mb-3 text-sm font-semibold uppercase tracking-widest text-accent">Бронювання</p>
+          <h2 className="font-display text-4xl font-bold text-white sm:text-5xl">Залиште заявку</h2>
+          <p className="mx-auto mt-4 max-w-2xl text-lg text-white/60">
+            Вкажіть контактні дані та бажану дату. Ми зателефонуємо, щоб підтвердити час і маршрут.
           </p>
         </div>
 
         {status === 'success' && (
-          <div className="mb-6 bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-green-400 text-center animate-scale-in">
-            Дякуємо! Ваша заявка прийнята. Ми зв'яжемося з вами найближчим часом.
+          <div role="status" className="mb-6 rounded-xl border border-green-500/30 bg-green-500/10 p-5 text-center text-green-400 animate-scale-in">
+            <p className="font-semibold">Заявку прийнято!</p>
+            <p className="mt-1 text-sm text-green-300/80">Ми зв'яжемося з вами для підтвердження поїздки.</p>
           </div>
         )}
         {status === 'error' && (
-          <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-center animate-scale-in">
-            Сталася помилка. Спробуйте ще раз або зателефонуйте нам.
+          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-5 text-center text-red-400 animate-scale-in">
+            Не вдалося надіслати заявку. Спробуйте ще раз або зателефонуйте: <a href={`tel:${PHONE_TEL}`} className="font-bold underline">{PHONE}</a>.
           </div>
         )}
 
         <form
           onSubmit={handleSubmit}
-          className={`bg-ink-800 border border-white/5 rounded-2xl p-6 sm:p-8 space-y-5 transition-all duration-700 ${
-            isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'
+          className={`rounded-3xl border border-white/5 bg-ink-800 p-6 shadow-2xl transition-all duration-700 sm:p-9 ${
+            isVisible ? 'translate-y-0 opacity-100' : 'translate-y-10 opacity-0'
           }`}
         >
-          <div className="grid sm:grid-cols-2 gap-5">
+          <div className="mb-6 flex flex-wrap gap-2 text-xs text-white/55 sm:text-sm">
+            <span className="rounded-full border border-white/10 px-3 py-1.5">Інструктаж включено</span>
+            <span className="rounded-full border border-white/10 px-3 py-1.5">Шоломи включено</span>
+            <span className="rounded-full border border-white/10 px-3 py-1.5">Підтвердження телефоном</span>
+          </div>
+
+          <div className="grid gap-5 sm:grid-cols-2">
             <div>
-              <label className="block text-white/70 text-sm font-medium mb-2">Ім'я *</label>
-              <input
-                type="text"
-                value={form.name}
-                onChange={(e) => handleChange('name', e.target.value)}
-                placeholder="Ваше ім'я"
-                className={inputClass('name')}
-              />
-              {errors.name && <p className="text-red-400 text-xs mt-1">{errors.name}</p>}
+              <label htmlFor="booking-name" className="mb-2 block text-sm font-medium text-white/70">Ім'я *</label>
+              <input id="booking-name" type="text" autoComplete="name" value={form.name} onChange={(e) => handleChange('name', e.target.value)} placeholder="Ваше ім'я" className={inputClass('name')} />
+              {errors.name && <p className="mt-1 text-xs text-red-400">{errors.name}</p>}
             </div>
             <div>
-              <label className="block text-white/70 text-sm font-medium mb-2">Телефон *</label>
-              <input
-                type="tel"
-                value={form.phone}
-                onChange={(e) => handleChange('phone', e.target.value)}
-                placeholder="+380 67 660 72 56"
-                className={inputClass('phone')}
-              />
-              {errors.phone && <p className="text-red-400 text-xs mt-1">{errors.phone}</p>}
+              <label htmlFor="booking-phone" className="mb-2 block text-sm font-medium text-white/70">Телефон *</label>
+              <input id="booking-phone" type="tel" inputMode="tel" autoComplete="tel" value={form.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="+380 67 660 72 56" className={inputClass('phone')} />
+              {errors.phone && <p className="mt-1 text-xs text-red-400">{errors.phone}</p>}
             </div>
           </div>
 
-          <div className="grid sm:grid-cols-2 gap-5">
+          <div className="mt-5 grid gap-5 sm:grid-cols-2">
             <div>
-              <label className="block text-white/70 text-sm font-medium mb-2">Дата поїздки *</label>
-              <input
-                type="date"
-                value={form.booking_date}
-                onChange={(e) => handleChange('booking_date', e.target.value)}
-                min={new Date().toISOString().split('T')[0]}
-                className={inputClass('booking_date')}
-              />
-              {errors.booking_date && <p className="text-red-400 text-xs mt-1">{errors.booking_date}</p>}
+              <label htmlFor="booking-date" className="mb-2 block text-sm font-medium text-white/70">Дата поїздки *</label>
+              <input id="booking-date" type="date" value={form.booking_date} onChange={(e) => handleChange('booking_date', e.target.value)} min={minDate} className={inputClass('booking_date')} />
+              {errors.booking_date && <p className="mt-1 text-xs text-red-400">{errors.booking_date}</p>}
             </div>
             <div>
-              <label className="block text-white/70 text-sm font-medium mb-2">Кількість людей</label>
-              <input
-                type="number"
-                value={form.people_count}
-                onChange={(e) => handleChange('people_count', Math.max(1, parseInt(e.target.value) || 1))}
-                min={1}
-                max={10}
-                className={inputClass('people_count')}
-              />
+              <label htmlFor="booking-people" className="mb-2 block text-sm font-medium text-white/70">Кількість людей</label>
+              <input id="booking-people" type="number" value={form.people_count} onChange={(e) => handleChange('people_count', Math.max(1, Number.parseInt(e.target.value, 10) || 1))} min={1} max={10} className={inputClass('people_count')} />
             </div>
           </div>
 
-          <div>
-            <label className="block text-white/70 text-sm font-medium mb-2">Маршрут</label>
-            <select
-              value={form.route}
-              onChange={(e) => handleChange('route', e.target.value)}
-              className={inputClass('route')}
-            >
-              <option value="">Не обрано</option>
-              {services.map((s) => (
-                <option key={s.id} value={s.title}>{s.title}</option>
-              ))}
-              {routes.map((r) => (
-                <option key={r.id} value={r.title}>{r.title}</option>
-              ))}
+          <div className="mt-5">
+            <label htmlFor="booking-route" className="mb-2 block text-sm font-medium text-white/70">Формат або маршрут</label>
+            <select id="booking-route" value={form.route} onChange={(e) => handleChange('route', e.target.value)} className={inputClass('route')}>
+              <option value="">Допоможіть обрати</option>
+              <optgroup label="Формати поїздки">
+                {services.map((service) => <option key={service.id} value={service.title}>{service.title} — {service.duration}</option>)}
+              </optgroup>
+              <optgroup label="Маршрути">
+                {routes.map((route) => <option key={route.id} value={route.title}>{route.title}</option>)}
+              </optgroup>
             </select>
           </div>
 
-          <div>
-            <label className="block text-white/70 text-sm font-medium mb-2">Коментар</label>
-            <textarea
-              value={form.comment}
-              onChange={(e) => handleChange('comment', e.target.value)}
-              placeholder="Додаткові побажання або питання..."
-              rows={3}
-              className={inputClass('comment')}
-            />
+          <div className="mt-5">
+            <label htmlFor="booking-comment" className="mb-2 block text-sm font-medium text-white/70">Коментар</label>
+            <textarea id="booking-comment" value={form.comment} onChange={(e) => handleChange('comment', e.target.value)} placeholder="Наприклад: їдемо вперше, потрібні два квадроцикли" rows={3} className={inputClass('comment')} />
           </div>
 
-          <button
-            type="submit"
-            disabled={status === 'loading'}
-            className="w-full bg-accent text-ink-950 font-bold py-4 rounded-xl text-lg hover:bg-accent-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {status === 'loading' ? 'Відправка...' : 'Відправити заявку'}
+          <button type="submit" disabled={status === 'loading'} className="mt-6 w-full rounded-xl bg-accent py-4 text-lg font-bold text-ink-950 transition-all hover:bg-accent-dark disabled:cursor-not-allowed disabled:opacity-50">
+            {status === 'loading' ? 'Надсилаємо заявку...' : 'Надіслати заявку'}
           </button>
+          <p className="mt-3 text-center text-xs leading-relaxed text-white/35">Надсилання форми не є оплатою. Остаточні деталі узгоджуються телефоном.</p>
         </form>
       </div>
     </section>
   )
-  
-  
 }

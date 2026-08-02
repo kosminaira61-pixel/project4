@@ -1,5 +1,6 @@
 import { services } from '../data/content'
 import { useScrollAnimation } from '../hooks/useScrollAnimation'
+import { trackEvent } from '../lib/analytics'
 
 export default function Services() {
   const { ref, isVisible } = useScrollAnimation()
@@ -13,7 +14,7 @@ export default function Services() {
             Оберіть свою пригоду
           </h2>
           <p className="text-white/60 text-lg mt-4 max-w-2xl mx-auto">
-            Ціни є прикладними та можуть змінюватися. Зв'яжіться з нами для уточнення деталей.
+            Вартість указана за один квадроцикл. Фінальний маршрут залежить від погоди та стану гірських доріг.
           </p>
         </div>
 
@@ -47,13 +48,17 @@ export default function Services() {
               </ul>
               <a
                 href="#booking"
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('select-booking-option', { detail: service.title }))
+                  trackEvent('select_service', { service_name: service.title })
+                }}
                 className={`block text-center font-semibold py-3 rounded-xl transition-colors ${
                   service.popular
                     ? 'bg-accent text-ink-950 hover:bg-accent-dark'
                     : 'border border-white/10 text-white hover:bg-white/5'
                 }`}
               >
-                Забронювати
+                Обрати цей варіант
               </a>
             </div>
           ))}

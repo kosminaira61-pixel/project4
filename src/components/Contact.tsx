@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { PHONE, PHONE_TEL } from '../data/content'
 import { useScrollAnimation } from '../hooks/useScrollAnimation'
+import { trackEvent } from '../lib/analytics'
 
 export default function Contact() {
   const { ref, isVisible } = useScrollAnimation()
@@ -21,20 +22,47 @@ export default function Contact() {
     }
 
     setStatus('loading')
+    const payload = {
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      message: form.message.trim(),
+    }
+
     try {
-      const { error } = await supabase.from('contacts').insert({
-        name: form.name.trim(),
-        phone: form.phone.trim(),
-        message: form.message.trim(),
+      const [databaseResult, telegramResult] = await Promise.allSettled([
+        supabase.from('contacts').insert(payload),
+        fetch('/api/booking', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: payload.name,
+            phone: payload.phone,
+            date: '-',
+            time: '-',
+            comment: `Контактна форма: ${payload.message}`,
+          }),
+        }),
+      ])
+
+      const databaseSaved = databaseResult.status === 'fulfilled' && !databaseResult.value.error
+      const telegramSent = telegramResult.status === 'fulfilled' && telegramResult.value.ok
+      if (!databaseSaved && !telegramSent) throw new Error('Contact could not be delivered')
+
+      trackEvent('generate_lead', {
+        event_category: 'contact',
+        event_label: 'Contact Form',
+        form_name: 'contact',
+        value: 1,
       })
-      if (error) throw error
+
       setStatus('success')
+      setErrors({})
       setForm({ name: '', phone: '', message: '' })
-      setTimeout(() => setStatus('idle'), 5000)
+      setTimeout(() => setStatus('idle'), 7000)
     } catch (err) {
       console.error('Contact error:', err)
       setStatus('error')
-      setTimeout(() => setStatus('idle'), 5000)
+      setTimeout(() => setStatus('idle'), 7000)
     }
   }
 
